@@ -83,7 +83,7 @@ public class ClientApp {
     public synchronized void sendFileChange(String change) {
         sendMessage(new Message(MessageType.FILE_CHANGE, change, clientName));
         if (gui != null)
-            gui.appendLog("Sent change: " + change);
+            gui.appendLog("Change: " + change);
     }
 
     public synchronized void sendError(String error) {
