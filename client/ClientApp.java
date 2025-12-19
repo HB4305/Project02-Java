@@ -1,113 +1,103 @@
 package client;
 
 import common.Message;
-import javax.swing.*;
-import java.awt.*;
-import java.io.*;
+import common.MessageType;
+import javax.swing.SwingUtilities;
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.net.Socket;
-import java.nio.file.*;
-import java.net.InetAddress;
 
-public class ClientApp extends JFrame {
-    private JTextArea statusArea;
+public class ClientApp {
     private Socket socket;
     private ObjectOutputStream out;
     private ObjectInputStream in;
     private String clientName;
-    private Thread watcherThread; // Luồng giám sát file
+    private FileWatcher currentWatcher;
+    private ClientGUI gui;
 
     public ClientApp() {
-        setTitle("Client Monitor");
-        setSize(400, 300);
-        setDefaultCloseOperation(EXIT_ON_CLOSE);
-
-        statusArea = new JTextArea();
-        statusArea.setEditable(false);
-        add(new JScrollPane(statusArea), BorderLayout.CENTER);
-
-        // Tự động kết nối khi chạy
-        new Thread(this::connectToServer).start();
+        this(false);
     }
 
-    private void connectToServer() {
-        try {
-            // Lấy tên máy tính làm tên Client
-            clientName = InetAddress.getLocalHost().getHostName();
-            log("Đang kết nối tới Server (localhost:9999)...");
-
-            // LƯU Ý: Thay "localhost" bằng IP của máy Server nếu chạy 2 máy khác nhau
-            socket = new Socket("localhost", 9999);
-            out = new ObjectOutputStream(socket.getOutputStream());
-            in = new ObjectInputStream(socket.getInputStream());
-
-            // Gửi tin nhắn đăng nhập
-            out.writeObject(new Message(Message.Type.LOGIN, clientName, "Hello"));
-            log("Đã kết nối! Đang chờ lệnh từ Server...");
-
-            // Vòng lặp lắng nghe lệnh từ Server
-            while (true) {
-                Message msg = (Message) in.readObject();
-                if (msg.getType() == Message.Type.START_MONITOR) {
-                    String path = msg.getContent();
-                    log("Server yêu cầu giám sát: " + path);
-                    restartWatcher(path);
-                }
-            }
-        } catch (Exception e) {
-            log("Lỗi kết nối: " + e.getMessage());
+    protected ClientApp(boolean testMode) {
+        if (!testMode) {
+            gui = new ClientGUI(this);
+            gui.setVisible(true);
         }
     }
 
-    // Hàm khởi động lại WatchService cho đường dẫn mới
-    private void restartWatcher(String pathStr) {
-        // Nếu đang chạy cái cũ thì tắt đi
-        if (watcherThread != null && watcherThread.isAlive()) {
-            watcherThread.interrupt();
-        }
-
-        watcherThread = new Thread(() -> {
+    public void connect(String host, int port, String name) {
+        this.clientName = name;
+        new Thread(() -> {
             try {
-                WatchService watchService = FileSystems.getDefault().newWatchService();
-                Path path = Paths.get(pathStr);
+                if (gui != null)
+                    gui.appendLog("Connecting to " + host + ":" + port + "...");
+                socket = new Socket(host, port);
+                out = new ObjectOutputStream(socket.getOutputStream());
+                in = new ObjectInputStream(socket.getInputStream());
 
-                // Đăng ký các sự kiện: Tạo, Xóa, Sửa
-                path.register(watchService,
-                        StandardWatchEventKinds.ENTRY_CREATE,
-                        StandardWatchEventKinds.ENTRY_DELETE,
-                        StandardWatchEventKinds.ENTRY_MODIFY);
-
-                log("Đang giám sát thư mục: " + pathStr);
-
-                while (!Thread.currentThread().isInterrupted()) {
-                    WatchKey key;
-                    try {
-                        key = watchService.take(); // Chờ sự kiện xảy ra
-                    } catch (InterruptedException x) {
-                        return;
-                    }
-
-                    for (WatchEvent<?> event : key.pollEvents()) {
-                        WatchEvent.Kind<?> kind = event.kind();
-                        Path fileName = (Path) event.context();
-
-                        String notification = kind.name() + ": " + fileName;
-                        log("Phát hiện: " + notification);
-
-                        // Gửi báo cáo về Server
-                        sendMessage(
-                                new Message(Message.Type.FILE_CHANGE, clientName, notification + " tại " + pathStr));
-                    }
-
-                    boolean valid = key.reset();
-                    if (!valid)
-                        break;
+                sendMessage(new Message(MessageType.LOGIN, null, clientName));
+                if (gui != null) {
+                    gui.appendLog("Connected as " + clientName);
+                    gui.setConnected();
                 }
-            } catch (IOException e) {
-                sendMessage(new Message(Message.Type.ERROR, clientName, "Không thể đọc thư mục: " + e.getMessage()));
-                log("Lỗi giám sát: " + e.getMessage());
+
+                // Listen loop
+                while (true) {
+                    Message msg = (Message) in.readObject();
+                    handleMessage(msg);
+                }
+
+            } catch (Exception e) {
+                if (gui != null)
+                    gui.appendLog("Connection Error: " + e.getMessage());
+                e.printStackTrace();
+            } finally {
+                close();
             }
-        });
-        watcherThread.start();
+        }).start();
+    }
+
+    private void handleMessage(Message msg) {
+        switch (msg.getType()) {
+            case START_MONITOR:
+                String path = (String) msg.getPayload();
+                if (gui != null)
+                    gui.appendLog("Monitor request for: " + path);
+                startWatcher(path);
+                break;
+            default:
+                System.out.println("Unknown message: " + msg);
+        }
+    }
+
+    private synchronized void startWatcher(String path) {
+        if (currentWatcher != null) {
+            currentWatcher.stop();
+        }
+        currentWatcher = new FileWatcher(path, this);
+        new Thread(currentWatcher).start();
+    }
+
+    public synchronized void sendFileChange(String change) {
+        sendMessage(new Message(MessageType.FILE_CHANGE, change, clientName));
+        if (gui != null)
+            gui.appendLog("Sent change: " + change);
+    }
+
+    public synchronized void sendError(String error) {
+        sendMessage(new Message(MessageType.ERROR, error, clientName));
+        if (gui != null)
+            gui.appendLog("Error: " + error);
+    }
+
+    public void log(String message) {
+        if (gui != null) {
+            gui.appendLog(message);
+        } else {
+            System.out.println(message);
+        }
     }
 
     private void sendMessage(Message msg) {
@@ -115,15 +105,26 @@ public class ClientApp extends JFrame {
             out.writeObject(msg);
             out.flush();
         } catch (IOException e) {
-            log("Lỗi gửi tin: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
-    private void log(String msg) {
-        SwingUtilities.invokeLater(() -> statusArea.append(msg + "\n"));
+    private void close() {
+        if (currentWatcher != null)
+            currentWatcher.stop();
+        try {
+            if (out != null)
+                out.close();
+            if (in != null)
+                in.close();
+            if (socket != null)
+                socket.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 
     public static void main(String[] args) {
-        SwingUtilities.invokeLater(() -> new ClientApp().setVisible(true));
+        SwingUtilities.invokeLater(() -> new ClientApp());
     }
 }

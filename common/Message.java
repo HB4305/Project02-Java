@@ -5,34 +5,30 @@ import java.io.Serializable;
 public class Message implements Serializable {
     private static final long serialVersionUID = 1L;
 
-    // Các loại tin nhắn
-    public enum Type {
-        LOGIN, // Client gửi tin nhắn đăng nhập
-        START_MONITOR, // Server yêu cầu bắt đầu giám sát
-        FILE_CHANGE, // Client báo cáo thay đổi file
-        ERROR // Báo lỗi
-    }
+    private MessageType type;
+    private Object payload;
+    private String sender;
 
-    private Type type;
-    private String content; // Nội dung (ví dụ: đường dẫn, tên file)
-    private String sender; // Tên máy gửi
-
-    public Message(Type type, String sender, String content) {
+    public Message(MessageType type, Object payload, String sender) {
         this.type = type;
+        this.payload = payload;
         this.sender = sender;
-        this.content = content;
     }
 
-    // Getters
-    public Type getType() {
+    public MessageType getType() {
         return type;
     }
 
-    public String getContent() {
-        return content;
+    public Object getPayload() {
+        return payload;
     }
 
     public String getSender() {
         return sender;
+    }
+
+    @Override
+    public String toString() {
+        return "Message{type=" + type + ", payload=" + payload + ", sender='" + sender + "'}";
     }
 }
